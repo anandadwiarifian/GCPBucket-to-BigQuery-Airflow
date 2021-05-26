@@ -30,14 +30,13 @@ with models.DAG(
     schedule_interval=timedelta(days=1),
 ) as dag:
 
-    # dummy task
-    end_of_data_pipeline = DummyOperator(task_id='end_of_data_pipeline')
-
+    # Task 1
     gcs_to_bq = GoogleCloudStorageToBigQueryOperator(
         task_id="gcs_to_bq",
         bucket=BUCKET_NAME,
         source_objects=["user_purchase/{{ds}}/temp_filtered_user_purchase.csv"],
-        destination_project_dataset_table=PROJECT_ID+":mydataset.user_purchase${{ds_nodash}}",
+        destination_project_dataset_table=PROJECT_ID+".mydataset.user_purchase${{ds_nodash}}",
+        # write the data to mydataset.user_purchase where _partitioneddate = {{ds}}
         source_format="csv",
         skip_leading_rows=1,
         schema_fields=[
@@ -56,26 +55,28 @@ with models.DAG(
         wait_for_downstream=True,
         depends_on_past=True
     )
-
+    # Task 2
     pivoting_for_country_level = BigQueryOperator(
         task_id='pivoting_for_country_level',
         sql="""
         SELECT
             InvoiceDate,  
             Country,
-            StockCode,
-            detail,
-            COUNT(DISTINCT InvoiceNo) AS Quantity,
+            COUNT(*) AS Quantity,
             SUM(UnitPrice) As GMV
         FROM 
-            `"""+PROJECT_ID+""":mydataset.user_purchase`
+            `"""+PROJECT_ID+""".mydataset.user_purchase`
         WHERE _PARTITIONDATE = '{{ds}}'
-        GROUP BY 1,2,3,4
+        GROUP BY 1,2
         """,
         write_disposition='WRITE_APPEND',
-        destination_dataset_table=f"{PROJECT_ID}:mydataset.country_sales",
+        destination_dataset_table=f"{PROJECT_ID}.mydataset.country_sales",
         use_legacy_sql=False,
         dag=dag
     )
 
+    # Task 3 (dummy task)
+    end_of_data_pipeline = DummyOperator(task_id='end_of_data_pipeline')
+
+    # define the dependecies
     gcs_to_bq >> pivoting_for_country_level >> end_of_data_pipeline
